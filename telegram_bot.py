@@ -412,9 +412,9 @@ Answer concisely in 3-5 sentences. Use actual data values. Be direct."""
 
 # ── Incoming message handler ──────────────────────────────────
 def handle_update(update):
-    message = update.get('message', {})
-    text    = message.get('text', '').strip()
-
+    try:
+        message = update.get('message', {})
+        text    = message.get('text', '').strip()
     if not text:
         return
 
@@ -485,6 +485,14 @@ def handle_update(update):
     send_message('Let me check your data...')
     handle_question(text)
 
+except Exception as e:
+        print(f'handle_update error: {e}')
+        import traceback
+        traceback.print_exc()
+        try:
+            send_message(f'⚠️ Error: {str(e)[:100]}')
+        except:
+            pass
 # ── Webhook endpoint ──────────────────────────────────────────
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook():
