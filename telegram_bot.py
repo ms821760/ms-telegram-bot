@@ -379,6 +379,17 @@ def handle_question(question):
         load_data = get_training_load()
         mental    = get_mental_health_recent()
         ctl, atl, tsb = calculate_tsb(load_data)
+        print('Fetching training data...')
+        training  = get_recent_training()
+        print('Got training, fetching health...')
+        health    = get_health_metrics()
+        print('Got health, fetching load...')
+        load_data = get_training_load()
+        print('Got load, fetching mental...')
+        mental    = get_mental_health_recent()
+        print('Calling Claude...')
+        ctl, atl, tsb = calculate_tsb(load_data)
+        ...
 
         prompt = f"""You are a performance coach for a 47-year-old drilling engineer on sabbatical.
 Goals: Body fat <15%, muscle 105-110 lbs, MS 150 bike ride April 25-26, Houston Marathon January 17 2027.
