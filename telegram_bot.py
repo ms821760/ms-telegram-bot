@@ -101,7 +101,7 @@ def period_label(month, year=2026):
     if month:
         name = [k for k, v in MONTH_MAP.items() if v == month][0].capitalize()
         return f'{name} {year}'
-    return 'last 30 days'
+    return 'full history'
 
 # ── Data fetchers (period-aware) ──────────────────────────────
 def get_activities(month=None):
@@ -151,14 +151,27 @@ def get_mental_health(month=None):
         print(f'mental_health error: {e}')
         return []
 
+def get_all_time_monthly():
+    return run_query("""
+        SELECT DATE_TRUNC('month', date)::date as month,
+               ROUND(SUM(run_min)::numeric, 0) run_min,
+               ROUND(SUM(ride_min)::numeric, 0) ride_min,
+               ROUND(SUM(strength_min)::numeric, 0) strength_min,
+               ROUND(SUM(cardio_min)::numeric, 0) cardio_min,
+               ROUND(SUM(z2_min)::numeric, 0) z2_min,
+               COUNT(DISTINCT date) days_active
+        FROM daily_activity_summary
+        GROUP BY 1 ORDER BY 1
+    """)
+
 def get_body_comp():
-    return run_query("SELECT date, weight_lb, body_fat_pct, skeletal_muscle_mass_lb, inbody_score FROM body_composition ORDER BY date DESC LIMIT 3")
+    return run_query("SELECT date, weight_lb, body_fat_pct, skeletal_muscle_mass_lb, inbody_score FROM body_composition ORDER BY date")
 
 def get_training_load():
     return run_query("""
         SELECT date, run_min, ride_min, strength_min, cardio_min, z1_min, z2_min, z3_min, z4_min, z5_min
         FROM daily_activity_summary
-        WHERE date >= CURRENT_DATE - INTERVAL '42 days'
+        WHERE date >= CURRENT_DATE - INTERVAL '90 days'
         ORDER BY date
     """)
 
@@ -332,21 +345,20 @@ def handle_question(question):
         load_data     = get_training_load()
         ctl, atl, tsb = calculate_tsb(load_data)
 
-        # Fetch all metrics for the detected period
-        print('Fetching all period data...')
+        # Always fetch full monthly history for broad context
+        print('Fetching all-time monthly summary...')
+        monthly = get_all_time_monthly()
+
+        # Fetch period-specific data
+        print('Fetching period data...')
         activities = get_activities(month=month)
         summary    = get_activity_summary(month=month)
         health     = get_health(month=month)
         mental     = get_mental_health(month=month)
 
-        # Conditionally fetch nutrition and body comp
-        nutrition = []
-        if any(w in q_lower for w in ['nutrition','calorie','protein','carb','fat','food','eat','diet','macro']):
-            nutrition = get_nutrition(month=month)
-
-        body_comp = []
-        if any(w in q_lower for w in ['body','weight','fat','muscle','composition','inbody']):
-            body_comp = get_body_comp()
+        # Always fetch nutrition and body comp
+        nutrition = get_nutrition(month=month)
+        body_comp = get_body_comp()
 
         prs = []
         if any(w in q_lower for w in ['pr','personal record','best','fastest','record']):
@@ -358,20 +370,30 @@ HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171
 CTL: {ctl} | ATL: {atl} | TSB: {tsb}
 Today: {TODAY()} | Data period: {period_label(month)}
 
-ALL ACTIVITIES ({period_label(month)}):
+You have FULL HISTORICAL DATA going back to 2021. Never say you can only see a limited window.
+Use all_time_monthly for historical comparisons, and period-specific data for detailed questions.
+
+ALL-TIME MONTHLY SUMMARY (every month ever):
+{json.dumps(monthly, default=str)}
+
+ACTIVITIES ({period_label(month)}):
 {json.dumps(activities, default=str)}
 
 DAILY SUMMARY ({period_label(month)}):
 {json.dumps(summary, default=str)}
 
-HEALTH METRICS ({period_label(month)}):
+HEALTH ({period_label(month)}):
 {json.dumps(health, default=str)}
+
+NUTRITION ({period_label(month)}):
+{json.dumps(nutrition, default=str)}
+
+BODY COMP (all time):
+{json.dumps(body_comp, default=str)}
 
 MENTAL HEALTH ({period_label(month)}):
 {json.dumps(mental, default=str)}
 
-{f'NUTRITION: {json.dumps(nutrition, default=str)}' if nutrition else ''}
-{f'BODY COMP: {json.dumps(body_comp, default=str)}' if body_comp else ''}
 {f'PERSONAL RECORDS: {json.dumps(prs, default=str)}' if prs else ''}
 
 Question: {question}
