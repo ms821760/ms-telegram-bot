@@ -1,8 +1,6 @@
 import os
 import json
 import requests
-import schedule
-import time
 import threading
 import traceback
 from datetime import date, datetime, timedelta
@@ -494,19 +492,26 @@ def health_check():
     return jsonify({'status': 'ok', 'service': 'telegram-bot'}), 200
 
 @app.route('/trigger/briefing', methods=['POST'])
-def manual_briefing():
+def trigger_briefing():
     threading.Thread(target=send_evening_briefing, daemon=True).start()
     return jsonify({'status': 'triggered'}), 200
 
-# ── Scheduler ─────────────────────────────────────────────────
-def run_scheduler():
-    schedule.every().day.at('12:00').do(lambda: threading.Thread(target=start_checkin, args=('morning',),   daemon=True).start())
-    schedule.every().day.at('18:00').do(lambda: threading.Thread(target=start_checkin, args=('afternoon',), daemon=True).start())
-    schedule.every().day.at('23:30').do(lambda: threading.Thread(target=start_checkin, args=('evening',),   daemon=True).start())
-    schedule.every().day.at('00:00').do(lambda: threading.Thread(target=send_evening_briefing,              daemon=True).start())
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+@app.route('/trigger/morning', methods=['POST'])
+def trigger_morning():
+    threading.Thread(target=start_checkin, args=('morning',), daemon=True).start()
+    return jsonify({'status': 'triggered'}), 200
+
+@app.route('/trigger/afternoon', methods=['POST'])
+def trigger_afternoon():
+    threading.Thread(target=start_checkin, args=('afternoon',), daemon=True).start()
+    return jsonify({'status': 'triggered'}), 200
+
+@app.route('/trigger/evening', methods=['POST'])
+def trigger_evening():
+    threading.Thread(target=start_checkin, args=('evening',), daemon=True).start()
+    return jsonify({'status': 'triggered'}), 200
+
+# ── Scheduler removed — using external cron (cron-job.org) ───
 
 def setup_webhook(base_url):
     r = requests.post(f'{TELEGRAM_API}/setWebhook', json={'url': f'{base_url}/telegram'}, timeout=10)
@@ -514,7 +519,6 @@ def setup_webhook(base_url):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8081))
-    threading.Thread(target=run_scheduler, daemon=True).start()
     base_url = os.environ.get('RAILWAY_PUBLIC_URL', '')
     if base_url:
         setup_webhook(base_url)
