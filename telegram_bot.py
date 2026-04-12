@@ -289,6 +289,45 @@ def ask_next_question():
     else:
         remove_keyboard(question)
 
+
+WORKOUT_TYPES = ['Upper Body Push', 'Upper Body Pull', 'Legs', 'Core / Cardio', 'Full Body', 'General']
+
+def handle_lift_command():
+    """Send workout type selection keyboard."""
+    keyboard = {
+        'keyboard': [[{'text': t}] for t in WORKOUT_TYPES],
+        'one_time_keyboard': True,
+        'resize_keyboard': True
+    }
+    send_message('💪 What type of workout?', reply_markup=keyboard)
+    state['mode'] = 'lift_type'
+
+def handle_lift_type(workout_type):
+    """Create session and send link."""
+    if workout_type not in WORKOUT_TYPES:
+        send_message('Please choose a workout type from the options.')
+        return
+    try:
+        import datetime
+        r = requests.post(
+            f'{PERF_APP_URL}/api/lift/session',
+            json={'workout_type': workout_type, 'date': datetime.date.today().isoformat()},
+            timeout=15
+        )
+        r.raise_for_status()
+        data = r.json()
+        url = data.get('url')
+        send_message(
+            f'*{workout_type}* workout started 💪\n\n'
+            f'Open your workout sheet:\n{url}\n\n'
+            f'Log your sets as you go, then tap *Finish Workout* when done.',
+            parse_mode='Markdown'
+        )
+        state['mode'] = None
+    except Exception as e:
+        send_message(f'Error creating workout: {str(e)[:100]}')
+        state['mode'] = None
+
 def handle_checkin_response(text):
     flow = CHECKIN_FLOWS.get(state['mode'], [])
     if state['step'] >= len(flow):
@@ -432,6 +471,9 @@ def handle_update(update):
         if text == '/afternoon': start_checkin('afternoon'); return
         if text == '/evening':   start_checkin('evening');   return
 
+        if text == '/lift':
+            handle_lift_command()
+            return
         if text == '/briefing':
             send_message('Generating your briefing...')
             threading.Thread(target=send_evening_briefing, daemon=True).start()
