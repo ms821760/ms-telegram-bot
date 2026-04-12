@@ -506,6 +506,10 @@ def handle_update(update):
                 send_message(f'Error: {str(e)[:100]}')
             return
 
+        if state['mode'] == 'lift_type':
+            handle_lift_type(text)
+            return
+
         if state['mode']:
             handle_checkin_response(text)
             return
