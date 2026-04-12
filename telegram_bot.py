@@ -36,7 +36,7 @@ MONTH_MAP = {
 state = {'mode': None, 'step': None, 'data': {}}
 
 # ── Telegram helpers ──────────────────────────────────────────
-def send_message(text, reply_markup=None):
+def send_message(text, reply_markup=None, parse_mode=None):
     try:
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}
         if reply_markup:
@@ -319,10 +319,9 @@ def handle_lift_type(workout_type):
         data = r.json()
         url = data.get('url')
         send_message(
-            f'*{workout_type}* workout started 💪\n\n'
+            f'{workout_type} workout started 💪\n\n'
             f'Open your workout sheet:\n{url}\n\n'
-            f'Log your sets as you go, then tap *Finish Workout* when done.',
-            parse_mode='Markdown'
+            f'Log your sets as you go, then tap Finish Workout when done.'
         )
         state['mode'] = None
     except Exception as e:
