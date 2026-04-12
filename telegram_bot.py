@@ -10,6 +10,7 @@ app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN')
+PERF_APP_URL     = os.environ.get('PERF_APP_URL', 'https://web-production-fdff3.up.railway.app')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 SUPABASE_URL     = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY     = os.environ.get('SUPABASE_KEY')
