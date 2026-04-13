@@ -537,6 +537,11 @@ def telegram_webhook():
 def health_check():
     return jsonify({'status': 'ok', 'service': 'telegram-bot'}), 200
 
+@app.route('/trigger/weekly', methods=['POST'])
+def trigger_weekly():
+    threading.Thread(target=send_weekly_briefing, daemon=True).start()
+    return jsonify({'status': 'triggered'}), 200
+
 @app.route('/trigger/briefing', methods=['POST'])
 def trigger_briefing():
     threading.Thread(target=send_evening_briefing, daemon=True).start()
@@ -556,6 +561,77 @@ def trigger_afternoon():
 def trigger_evening():
     threading.Thread(target=start_checkin, args=('evening',), daemon=True).start()
     return jsonify({'status': 'triggered'}), 200
+
+
+# ── Weekly Sunday Briefing ────────────────────────────────────
+def send_weekly_briefing():
+    print('Sending weekly briefing...')
+    try:
+        load_data        = get_training_load()
+        ctl, atl, tsb    = calculate_tsb(load_data)
+        training         = get_activity_summary()
+        health           = get_health()
+        nutrition        = get_nutrition()
+        body_comp        = get_body_comp()
+        mental           = get_mental_health()
+        monthly          = get_all_time_monthly()
+
+        last_week = [r for r in (training or []) if r.get('date', '') >= (
+            (date.today() - timedelta(days=7)).isoformat()
+        )]
+
+        today_str = TODAY()
+
+        prompt = f"""You are a performance coach for Mike, a 47-year-old drilling engineer on sabbatical.
+Goals: Body fat <15%, muscle 105-110 lbs, MS 150 April 25-26, Houston Marathon Jan 17 2027.
+HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171 bpm
+Phase: Body Comp + MS 150. Today: {today_str} (Sunday weekly review)
+FITNESS: CTL {ctl} | ATL {atl} | TSB {tsb} ({tsb_label(tsb)})
+
+LAST 7 DAYS TRAINING:
+{json.dumps(last_week, default=str)}
+
+HEALTH (last 30 days):
+{json.dumps(health, default=str)}
+
+NUTRITION (last 30 days):
+{json.dumps(nutrition, default=str)}
+
+BODY COMP:
+{json.dumps(body_comp, default=str)}
+
+MENTAL HEALTH:
+{json.dumps(mental, default=str)}
+
+ALL-TIME MONTHLY SUMMARY:
+{json.dumps(monthly, default=str)}
+
+Write a Sunday evening weekly briefing in two sections:
+
+*WEEK IN REVIEW*
+- What went well (specific numbers)
+- What fell short (missed sessions, nutrition gaps, recovery)
+- One key trend observation
+
+*THIS WEEK TARGETS*
+Give specific numbered targets:
+1. Total training volume vs last week (increase/maintain/decrease by how much)
+2. Zone targets — specific minutes for Z2 and Z3+ based on CTL/ATL/TSB
+3. Daily calorie and protein targets based on training load and body comp goals
+4. Workout types to prioritize or avoid
+5. One recovery or lifestyle focus
+
+Be direct. Use actual numbers. Each section under 150 words."""
+
+        summary = ask_claude(prompt, max_tokens=600)
+        header = "Weekly Briefing — " + today_str
+        send_message(header + "\n\n" + summary)
+        print('Weekly briefing sent.')
+
+    except Exception as e:
+        print(f'Weekly briefing error: {e}')
+        import traceback; traceback.print_exc()
+        send_message('Weekly briefing error: ' + str(e)[:100])
 
 # ── Scheduler removed — using external cron (cron-job.org) ───
 
