@@ -1,5 +1,6 @@
 import os
 import json
+import time as time_mod
 import requests
 import threading
 import traceback
@@ -91,7 +92,6 @@ def detect_month(q_lower):
     return None
 
 def period_sql(month, year=2026):
-    """Return a SQL WHERE clause for date filtering."""
     if month:
         return f"EXTRACT(MONTH FROM date) = {month} AND EXTRACT(YEAR FROM date) = {year}"
     return "date >= CURRENT_DATE - INTERVAL '30 days'"
@@ -181,6 +181,18 @@ def check_nutrition_logged_today():
     except Exception:
         return False
 
+def get_active_goals():
+    try:
+        return run_query("""
+            SELECT id, title, description, target_date, priority, status, impact_on_training
+            FROM goals
+            WHERE status = 'active'
+            ORDER BY target_date ASC NULLS LAST
+        """)
+    except Exception as e:
+        print(f'get_active_goals error: {e}')
+        return []
+
 # ── ATL/CTL calculation ───────────────────────────────────────
 def calculate_tsb(activity_data):
     IF = {'z1': 0.55, 'z2': 0.72, 'z3': 0.87, 'z4': 0.98, 'z5': 1.10}
@@ -223,11 +235,16 @@ def send_evening_briefing():
         mental           = get_mental_health()
         body_comp        = get_body_comp()
         nutrition_logged = check_nutrition_logged_today()
+        today_str        = TODAY()
 
         prompt = f"""You are a performance coach for a 47-year-old drilling engineer on sabbatical.
 PROFILE: Body Comp + MS 150 (April 25-26). Goals: BF <15%, muscle 105-110 lbs. Overtraining prone.
-HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171. Today: {TODAY()}
+HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171. Today: {today_str}
 FITNESS: CTL {ctl} | ATL {atl} | TSB {tsb} ({tsb_label(tsb)})
+
+CRITICAL DATE RULE: Today is {today_str}. Any workout with date == {today_str} happened TODAY,
+not yesterday. Only say "yesterday" if the workout date is {(date.today() - timedelta(days=1)).isoformat()}.
+
 TRAINING (last 7 days): {json.dumps(training, default=str)}
 HEALTH: {json.dumps(health, default=str)}
 NUTRITION: {json.dumps(nutrition, default=str)}
@@ -241,7 +258,7 @@ Generate evening briefing:
 *Tomorrow's Recommendation:* [ONE: Complete Rest / Active Recovery / Z2 Cardio / Z2 Ride / Strength Upper / Strength Lower / Tempo Run / Long Ride]
 *Why:* [2-3 sentences based on data]
 *Focus:* [1-2 specific tips]
-{'*Nutrition reminder:* Log your food today!' if not nutrition_logged else 'Nutrition logged today.'}
+{'*Nutrition reminder:* Log your food today!' if not nutrition_logged else 'Nutrition logged today. ✅'}
 Under 200 words. Be direct."""
 
         briefing = ask_claude(prompt, max_tokens=400)
@@ -251,6 +268,103 @@ Under 200 words. Be direct."""
         print(f'Briefing error: {e}')
         traceback.print_exc()
         send_message(f'Could not generate briefing: {str(e)[:100]}')
+
+# ── Morning workout recommendations ───────────────────────────
+def send_morning_workout_recommendations(checkin_data):
+    """
+    Called after morning check-in. Fetches training load context and active goals,
+    then generates 2-3 specific workout options for the day.
+    """
+    time_mod.sleep(1)  # slight delay so check-in confirmation message lands first
+    print('Generating morning workout recommendations...')
+    try:
+        load_data     = get_training_load()
+        ctl, atl, tsb = calculate_tsb(load_data)
+        health        = get_health()
+        training      = get_activity_summary()
+        body_comp     = get_body_comp()
+        goals         = get_active_goals()
+        today_str     = TODAY()
+        today_dt      = date.today()
+
+        # Pull check-in values for context
+        sleep_q = checkin_data.get('sleep_quality', '—')
+        energy  = checkin_data.get('energy', '—')
+        stress  = checkin_data.get('stress', '—')
+        notes   = checkin_data.get('notes', '')
+
+        # Find events in next 14 days that need freshness
+        upcoming_events = []
+        for g in goals:
+            td = g.get('target_date')
+            if td:
+                try:
+                    days_away = (date.fromisoformat(td) - today_dt).days
+                    if 0 <= days_away <= 14:
+                        upcoming_events.append({**g, 'days_away': days_away})
+                except Exception:
+                    pass
+
+        # Recent training (last 3 days) for fatigue context
+        recent = [r for r in (training or []) if r.get('date', '') >= (today_dt - timedelta(days=3)).isoformat()]
+
+        prompt = f"""You are a performance coach for Mike, a 47-year-old drilling engineer on sabbatical.
+Goals: BF <15%, muscle 105-110 lbs, MS 150 April 25-26, Houston Marathon Jan 17 2027.
+HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171 bpm
+Today: {today_str}
+
+MORNING CHECK-IN DATA:
+- Sleep quality: {sleep_q}/10
+- Energy: {energy}/10
+- Stress: {stress}/10
+- Notes: {notes or 'none'}
+
+FITNESS STATUS:
+CTL (fitness): {ctl} | ATL (fatigue): {atl} | TSB (form): {tsb} — {tsb_label(tsb)}
+
+LAST 3 DAYS TRAINING:
+{json.dumps(recent, default=str)}
+
+LAST 7 DAYS SUMMARY:
+{json.dumps(training[-7:] if training else [], default=str)}
+
+HEALTH (last 3 days):
+{json.dumps(health[:3] if health else [], default=str)}
+
+ACTIVE GOALS:
+{json.dumps(goals, default=str)}
+
+UPCOMING EVENTS (next 14 days — need to preserve freshness):
+{json.dumps(upcoming_events, default=str)}
+
+Based on all of the above, generate EXACTLY 2-3 workout options for today.
+
+Key considerations:
+- Low energy/poor sleep → favor easier options
+- High TSB (fresh) → OK to push; low TSB (fatigued) → recovery
+- Upcoming events within 7 days → protect freshness, no heavy legs before race
+- Avoid same muscle group on back-to-back days
+- Phase priority: Z2 riding and body composition
+
+For EACH option write exactly:
+*Option [N]: [Title]*
+Type: [Ride / Run / Strength / Cardio / Rest / Active Recovery]
+Duration: [X min]
+Intensity: [Easy Z1-Z2 / Moderate Z2-Z3 / Hard Z3-Z5]
+Details: [2-3 specific sentences — target zones, exercises if strength, pace if run]
+
+After all options, add one line:
+_Reply /lift to start a gym session, or just hit record on Strava when you're ready._
+
+Under 300 words total. Be specific with numbers."""
+
+        recommendations = ask_claude(prompt, max_tokens=600)
+        send_message(f"*Good morning! Here's today's plan:*\n\n{recommendations}")
+        print('Morning recommendations sent.')
+
+    except Exception as e:
+        print(f'Morning recommendations error: {e}')
+        traceback.print_exc()
 
 # ── Check-in flows ────────────────────────────────────────────
 CHECKIN_FLOWS = {
@@ -290,7 +404,6 @@ def ask_next_question():
     else:
         remove_keyboard(question)
 
-
 WORKOUT_TYPES = ['Upper Body Push', 'Upper Body Pull', 'Legs', 'Core / Cardio', 'Full Body', 'General']
 
 def handle_lift_command():
@@ -309,10 +422,9 @@ def handle_lift_type(workout_type):
         send_message('Please choose a workout type from the options.')
         return
     try:
-        import datetime
         r = requests.post(
             f'{PERF_APP_URL}/api/lift/session',
-            json={'workout_type': workout_type, 'date': datetime.date.today().isoformat()},
+            json={'workout_type': workout_type, 'date': date.today().isoformat()},
             timeout=15
         )
         r.raise_for_status()
@@ -349,51 +461,59 @@ def handle_checkin_response(text):
     ask_next_question()
 
 def finish_checkin():
+    checkin_snapshot = dict(state['data'])  # capture before clearing state
     try:
         row = {
-            'date':          state['data'].get('date', TODAY()),
-            'time_of_day':   state['data'].get('time_of_day'),
-            'energy':        state['data'].get('energy'),
-            'mood':          state['data'].get('mood'),
-            'stress':        state['data'].get('stress'),
-            'sleep_quality': state['data'].get('sleep_quality'),
-            'notes':         state['data'].get('notes'),
+            'date':          checkin_snapshot.get('date', TODAY()),
+            'time_of_day':   checkin_snapshot.get('time_of_day'),
+            'energy':        checkin_snapshot.get('energy'),
+            'mood':          checkin_snapshot.get('mood'),
+            'stress':        checkin_snapshot.get('stress'),
+            'sleep_quality': checkin_snapshot.get('sleep_quality'),
+            'notes':         checkin_snapshot.get('notes'),
             'logged_at':     datetime.utcnow().isoformat()
         }
         insert('mental_health_logs', row)
-        remove_keyboard('Check-in saved!')
+        remove_keyboard('Check-in saved! ✅')
+
+        # Morning check-in: fire off workout recommendations in background
+        if checkin_snapshot.get('time_of_day') == 'morning':
+            threading.Thread(
+                target=send_morning_workout_recommendations,
+                args=(checkin_snapshot,),
+                daemon=True
+            ).start()
+
     except Exception as e:
         print(f'finish_checkin error: {e}')
         traceback.print_exc()
         send_message(f'Could not save check-in: {str(e)[:100]}')
-    state['mode'] = None
-    state['step'] = None
-    state['data'] = {}
+    finally:
+        state['mode'] = None
+        state['step'] = None
+        state['data'] = {}
 
 # ── Question handler ──────────────────────────────────────────
 def handle_question(question):
     print(f'Question: {question}')
     try:
-        q_lower = question.lower()
-        month   = detect_month(q_lower)
+        q_lower   = question.lower()
+        month     = detect_month(q_lower)
+        today_str = TODAY()
         print(f'Detected month: {month}')
 
-        # Always get TSB
         load_data     = get_training_load()
         ctl, atl, tsb = calculate_tsb(load_data)
 
-        # Always fetch full monthly history for broad context
         print('Fetching all-time monthly summary...')
         monthly = get_all_time_monthly()
 
-        # Fetch period-specific data
         print('Fetching period data...')
         activities = get_activities(month=month)
         summary    = get_activity_summary(month=month)
         health     = get_health(month=month)
         mental     = get_mental_health(month=month)
 
-        # Always fetch nutrition and body comp
         nutrition = get_nutrition(month=month)
         body_comp = get_body_comp()
 
@@ -401,11 +521,19 @@ def handle_question(question):
         if any(w in q_lower for w in ['pr','personal record','best','fastest','record']):
             prs = run_query("SELECT distance_label, sport, rank, best_pace_display, achieved_date FROM personal_records WHERE best_time_sec IS NOT NULL ORDER BY sport, distance_m, rank")
 
+        goals = []
+        if any(w in q_lower for w in ['goal', 'race', 'event', 'priority', 'plan', 'upcoming', '5k']):
+            goals = get_active_goals()
+
         prompt = f"""You are a performance coach for a 47-year-old drilling engineer on sabbatical.
 Goals: Body fat <15%, muscle 105-110 lbs, MS 150 bike April 25-26, Houston Marathon Jan 17 2027.
 HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171
 CTL: {ctl} | ATL: {atl} | TSB: {tsb}
-Today: {TODAY()} | Data period: {period_label(month)}
+Today: {today_str} | Data period: {period_label(month)}
+
+CRITICAL DATE RULE: Today is {today_str}. Any workout with date == {today_str} happened TODAY.
+Do NOT say "yesterday" unless the workout date is {(date.today() - timedelta(days=1)).isoformat()}.
+Always use actual workout dates from the data, not assumptions about recency.
 
 You have FULL HISTORICAL DATA going back to 2021. Never say you can only see a limited window.
 Use all_time_monthly for historical comparisons, and period-specific data for detailed questions.
@@ -432,6 +560,7 @@ MENTAL HEALTH ({period_label(month)}):
 {json.dumps(mental, default=str)}
 
 {f'PERSONAL RECORDS: {json.dumps(prs, default=str)}' if prs else ''}
+{f'ACTIVE GOALS: {json.dumps(goals, default=str)}' if goals else ''}
 
 Question: {question}
 
@@ -458,10 +587,11 @@ def handle_update(update):
         if text in ('/start', '/help'):
             send_message(
                 '*MS Performance Coach*\n\n'
-                '/morning — Morning check-in\n'
+                '/morning — Morning check-in + workout plan\n'
                 '/afternoon — Afternoon check-in\n'
                 '/evening — Evening check-in\n'
                 '/briefing — Tonight\'s briefing now\n'
+                '/lift — Start a gym session\n'
                 '/status — Quick CTL/ATL/TSB status\n\n'
                 'Or ask me anything about your training!'
             )
@@ -562,7 +692,6 @@ def trigger_evening():
     threading.Thread(target=start_checkin, args=('evening',), daemon=True).start()
     return jsonify({'status': 'triggered'}), 200
 
-
 # ── Weekly Sunday Briefing ────────────────────────────────────
 def send_weekly_briefing():
     print('Sending weekly briefing...')
@@ -575,18 +704,20 @@ def send_weekly_briefing():
         body_comp        = get_body_comp()
         mental           = get_mental_health()
         monthly          = get_all_time_monthly()
+        today_str        = TODAY()
 
         last_week = [r for r in (training or []) if r.get('date', '') >= (
             (date.today() - timedelta(days=7)).isoformat()
         )]
-
-        today_str = TODAY()
 
         prompt = f"""You are a performance coach for Mike, a 47-year-old drilling engineer on sabbatical.
 Goals: Body fat <15%, muscle 105-110 lbs, MS 150 April 25-26, Houston Marathon Jan 17 2027.
 HR Zones: Z1<130, Z2 131-150, Z3 151-160, Z4 161-170, Z5>171 bpm
 Phase: Body Comp + MS 150. Today: {today_str} (Sunday weekly review)
 FITNESS: CTL {ctl} | ATL {atl} | TSB {tsb} ({tsb_label(tsb)})
+
+CRITICAL DATE RULE: Today is {today_str}. Any workout with date == {today_str} happened today.
+Only say "yesterday" if the workout date is {(date.today() - timedelta(days=1)).isoformat()}.
 
 LAST 7 DAYS TRAINING:
 {json.dumps(last_week, default=str)}
@@ -624,17 +755,15 @@ Give specific numbered targets:
 Be direct. Use actual numbers. Each section under 150 words."""
 
         summary = ask_claude(prompt, max_tokens=600)
-        header = "Weekly Briefing — " + today_str
-        send_message(header + "\n\n" + summary)
+        send_message(f"Weekly Briefing — {today_str}\n\n{summary}")
         print('Weekly briefing sent.')
 
     except Exception as e:
         print(f'Weekly briefing error: {e}')
-        import traceback; traceback.print_exc()
+        traceback.print_exc()
         send_message('Weekly briefing error: ' + str(e)[:100])
 
-# ── Scheduler removed — using external cron (cron-job.org) ───
-
+# ── Webhook setup ─────────────────────────────────────────────
 def setup_webhook(base_url):
     r = requests.post(f'{TELEGRAM_API}/setWebhook', json={'url': f'{base_url}/telegram'}, timeout=10)
     print(f'Webhook: {r.json()}')
